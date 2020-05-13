@@ -3,13 +3,14 @@ import numpy as np
 import pandas as pd
 from scipy.signal import remez, filtfilt
 
+from SWD.extraction_logger import Extractionlogger
 from cal_neuroim.cal_neuroIm import pushToBaseline
 from hmmlearn import hmm
 import matplotlib.pyplot as plt
 
 
 def extract_swr_coordinates(inputArray, swr_state_hits=2, state_chain_length=150,
-                            swr_length=200, swr_distance=1000, max_length=10000):
+                            swr_length=200, swr_distance=1000, max_length=10000, extraction_logger=None):
     """
     inputArray: array of state-indices, e.g. [0,0,1,1,1,2,2,3,2,2,1,1,1 ...]
 
@@ -51,9 +52,16 @@ def extract_swr_coordinates(inputArray, swr_state_hits=2, state_chain_length=150
                 if inputArray[i + 1] > 1:
                     state_chain_limit = i + state_chain_length
                 i += 1
-            # if a high-amplitude state was fitted or the chain is too long (gamma wave?), ignore this event
-            if 4 in inputArray[state_chain_start:state_chain_limit] or state_chain_limit - state_chain_start > max_length:
+            # if the chain is too long (gamma wave?), ignore this event
+            if state_chain_limit - state_chain_start > max_length:
+                if extraction_logger:
+                    extraction_logger.log_length_exception(state_chain_start, state_chain_limit)
                 continue
+            # if a high-amplitude state was fitted, ignore this event
+            elif 4 in inputArray[state_chain_start:state_chain_limit]:
+                if extraction_logger:
+                    extraction_logger.log_amplitude_exception(state_chain_start, state_chain_limit)
+                    continue
             # if state train is long enough and has >= (min swr_state_hits > 1), add to SWR-list
             elif state_chain_limit - state_chain_start > swr_length \
                     and np.sum(inputArray[state_chain_start:state_chain_limit] - 1) >= swr_state_hits:
@@ -121,8 +129,8 @@ for columnIndex in [0, 1]:
     model.means_ = [[0], [baselineDeviance * 8], [baselineDeviance * -14], [baselineDeviance * 20], [baselineDeviance * 200]]
     model.fit(movingAverageArray[columnIndex].reshape(-1, 1))
     # test = model.predict(movingAverageArray[columnIndex].reshape(-1, 1))
-
-    ripples = extract_swr_coordinates(test, state_chain_length=100, swr_distance=500, swr_state_hits=15)
+    logger = Extractionlogger()
+    ripples = extract_swr_coordinates(test, state_chain_length=100, swr_distance=500, swr_state_hits=15, logger=logger)
     plt.plot(baselineArray[columnIndex], 'g', alpha=0.7)
     plt.plot(movingAverageArray[columnIndex], alpha=0.8)
     plt.plot(test, alpha=0.5)
@@ -130,5 +138,6 @@ for columnIndex in [0, 1]:
         plt.plot(range(x[0], x[1]), movingAverageArray[columnIndex, x[0]:x[1]], 'r')
     plt.title(str(len(ripples)) + " " + str(baselineDeviance))
     plt.show()
+    logger.print()
 
 print(time.time() - start)
