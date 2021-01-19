@@ -1,5 +1,5 @@
+import sys
 import time
-from shutil import move
 
 import numpy as np
 import pandas as pd
@@ -8,7 +8,6 @@ from scipy.io import loadmat
 from scipy.ndimage.filters import gaussian_filter
 
 from SWD.extraction_logger import ExtractionLogger
-from cal_neuroim.cal_neuroIm import pushToBaseline
 from hmmlearn import hmm
 import matplotlib.pyplot as plt
 import pickle
@@ -131,7 +130,7 @@ def normalize_2d_df(input_matrix, sampling_rate, downsampling_factor=1, baseline
 
         input_matrix = np.array(values)
 
-    baseline_array, baseline_coordinate_tuple = pushToBaseline(input_matrix, bucketSize=baseline_window_size)
+    baseline_array, baseline_coordinate_tuple = _pushToBaseline(input_matrix, bucketSize=baseline_window_size)
     input_matrix = filter_ripple_band(baseline_array, sampling_rate)
 
     if moving_average_window > 1:
@@ -144,10 +143,47 @@ def normalize_2d_df(input_matrix, sampling_rate, downsampling_factor=1, baseline
     return [input_matrix, baseline_array, baseline_coordinate_tuple]
 
 
+def _pushToBaseline(dataMatrix, bucketSize=300):
+    """
+    @param dataMatrix: matrix of the data whose baseline we're looking for
+    @param bucketSize: size of the baseline bins
+    @return: baseline corrected version of the data:
+            coordList: tuple with start / end coordinate of the region determined as baseline activity, for visualization purposes
+    """
+    coordList = []
+    for column in dataMatrix:
+        baseLineArray, coordinates = _detectBaseline(column, bucketSize)
+        meanVal = abs(np.mean(baseLineArray))
+        coordList.append(coordinates)
+        column[...] = column / meanVal - np.mean(baseLineArray / meanVal)  # baseline correction
+
+    return dataMatrix, coordList
+
+
+def _detectBaseline(data, bucketSize):
+    """
+    @param data: the array out of which the region with the lowest noise is to be identified
+    @param bucketSize: size of the bins to be checked
+    @return: bin with the lowest noise and its starting coordinate, in a tuple
+    """
+    data = np.trim_zeros(data, 'b')
+    numOfEntries = len(data)
+    lowestSigma = sys.maxsize  # for size comparison
+    coordinate = []
+    for j in range(0, int(numOfEntries - bucketSize), int(numOfEntries / (bucketSize * 2))):
+        thisStd = np.std(data[j:j + bucketSize])  # current deviation
+        if thisStd < lowestSigma:  # new min deviation found
+            lowestSigma = thisStd
+            coordinate = (j, j + bucketSize)
+        baselineArray = data[coordinate[0]:coordinate[1]]
+    return baselineArray, coordinate
+
+
 start = time.time()
-'''
+
 print("Loading data and normalizing ...")
-rawData = loadmat('./NewData/MaxTrace')['MaxTrace']
+# rawData = loadmat('./NewData/MaxTrace')['MaxTrace']
+rawData = pd.read_csv("18jul19_slice1ExTraces.txt", sep="\t").to_numpy(dtype=float).T
 moving_average_array, baseline_data, baseline_coordinate_list = normalize_2d_df(
     rawData, downsampling_factor=20, sampling_rate=1000, moving_average_window=100, sigma=2)
 np.savetxt('movingAverageArray.txt', moving_average_array, delimiter=",", fmt="%2.5f")
@@ -160,7 +196,7 @@ plt.plot(moving_average_array)
 baseline_data = np.loadtxt('baselineData', dtype=float, delimiter=",")
 baseline_coordinate_list = np.loadtxt('baselineCoordinates', dtype=float)
 baseline_coordinate_list = [[int(baseline_coordinate_list[0]), int(baseline_coordinate_list[1])]]
-
+'''
 '''
 rawAnnotations = loadmat('./NewData/RipPeakSec')['RipPeakSec']
 np.savetxt('annotated_ripples.txt', rawAnnotations)
