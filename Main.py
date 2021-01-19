@@ -2,8 +2,8 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-from ripple_detection import ripple_detection as rd
 from cal_neuroim import cal_neuroIm as cni
+from SWD import hmmSWD as swd
 
 
 def rootmeansquare(array):
@@ -12,7 +12,7 @@ def rootmeansquare(array):
 
 df = pd.read_csv('/home/meop/Python/Projects/SWD/18jul19_slice1ExTraces.txt', sep="\t", dtype="float32")
 
-filteredDF = pd.DataFrame(rd.filter_ripple_band(df.values, 20000))
+filteredDF = pd.DataFrame(swd.filter_ripple_band(df.values, 20000))
 
 for column in filteredDF:
     currentSweep = filteredDF[column]

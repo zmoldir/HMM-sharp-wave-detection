@@ -1,4 +1,6 @@
 import time
+from shutil import move
+
 import numpy as np
 import pandas as pd
 from scipy.signal import remez, filtfilt
@@ -37,46 +39,54 @@ def extract_swr_coordinates(input_array, swr_state_hits=2, state_chain_length=15
         if yes: get coordinates, move loop forward by swr_distance + event end (no SWR possible in this slice)
         if no: move loop forward by state_chain_length + current pos (no SWR possible in this slice)
 
-    :return list of coordinate start-end-tuples:
+    :return: list of swr coordinate tuples [start, end]
     """
+
+    # TODO make param defaults depenent on sampling freq, re-implement high freq noise thing
     swr_coordinate_list = []
+    perform_length_check_bool = False
+    perform_amplitude_check = False
 
     position_int = 0
     input_length = len(input_array) - 1
-    input_array = input_array - 3
+    input_array = input_array-3
     while position_int < input_length - swr_length:
-        # state 1 or higher encountered, go to the inner loop for state-chain checking
-        if input_array[position_int] > 0:
+        # set all noise states to 0
+        if input_array[position_int] < 0:
+            input_array[position_int] = 0
+        # state 1 (post reduction) or higher encountered, go to the inner loop for state-chain checking
+        else:
             state_chain_start = position_int
             state_chain_limit = position_int + state_chain_length
             # inner loop that checks whether SWR-requirements are met by the current data chunk
             while position_int < state_chain_limit and position_int < input_length:
-                # set all values in current chunk to 1, except first occurrences of >1
+                # noise state encountered, break off event chain here
+                if input_array[position_int] < 1:
+                    break
+                # keep only state changes, set everything else to 1
                 # example: 1,1,0,0,2,2,1,1,2,2 -> 1,1,1,1,2,1,1,1,2,1
-                if input_array[position_int] == input_array[position_int - 1] or input_array[position_int] == 0:
+                elif input_array[position_int] == input_array[position_int - 1] or input_array[position_int] == 2:
                     input_array[position_int] = 1
                 # if state is not 1, extend potential chain region
-                if input_array[position_int + 1] > 1:
+                elif input_array[position_int] > 1:
                     state_chain_limit = position_int + state_chain_length
                 position_int += 1
             # if the chain is too long (gamma wave?), ignore this event
-            if state_chain_limit - state_chain_start > max_length:
+            if perform_length_check_bool and state_chain_limit - state_chain_start > max_length:
                 if extraction_logger:
                     extraction_logger.log_length_exception(state_chain_start, state_chain_limit)
                 continue
             # if a high-amplitude state was fitted, ignore this event
-            elif False and 4 in input_array[state_chain_start:state_chain_limit]:
+            elif perform_amplitude_check and 4 in input_array[state_chain_start:state_chain_limit]:
                 if extraction_logger:
                     extraction_logger.log_amplitude_exception(state_chain_start, state_chain_limit)
-                    continue
+                continue
             # if state train is long enough and has >= (min swr_state_hits > 1), add to SWR-list
             elif state_chain_limit - state_chain_start > swr_length \
                     and np.sum(input_array[state_chain_start:state_chain_limit] - 1) >= swr_state_hits:
                 swr_coordinate_list.append([state_chain_start, position_int])
                 # forward iterator to respect refractory period between SWRs
                 position_int += swr_distance
-        else:
-            input_array[position_int] = 0
         position_int += 1
 
     return swr_coordinate_list
@@ -115,7 +125,7 @@ def normalize_2d_df(input_matrix, sampling_rate, downsampling_factor=1, baseline
 
             downsampledList = [np.mean(row[counter:counter + downsampling_factor])
                                for counter in range(len(row) - downsampling_factor)
-                               if counter % (downsampling_factor+1) == 0]
+                               if counter % downsampling_factor == 0]
 
             values.append(downsampledList)
 
@@ -128,80 +138,91 @@ def normalize_2d_df(input_matrix, sampling_rate, downsampling_factor=1, baseline
         for row in input_matrix:
             tempSeries = pd.Series(row)
             input_matrix = tempSeries.rolling(moving_average_window).mean()
-    filtered_array = gaussian_filter(input_matrix, sigma=sigma)
+    if sigma > 1:
+        filtered_array = gaussian_filter(input_matrix, sigma=sigma)
+        return [filtered_array, baseline_array, baseline_coordinate_tuple]
     return [input_matrix, baseline_array, baseline_coordinate_tuple]
 
 
 start = time.time()
-
 '''
-rawData = loadmat('myRipTrace.txt')['myRipTrace']
-
+print("Loading data and normalizing ...")
+rawData = loadmat('./NewData/MaxTrace')['MaxTrace']
 moving_average_array, baseline_data, baseline_coordinate_list = normalize_2d_df(
-    rawData, downsampling_factor=15, sampling_rate=1333, moving_average_window=50, sigma=3)
+    rawData, downsampling_factor=20, sampling_rate=1000, moving_average_window=100, sigma=2)
 np.savetxt('movingAverageArray.txt', moving_average_array, delimiter=",", fmt="%2.5f")
 np.savetxt('baselineCoordinates', baseline_coordinate_list)
+np.savetxt('baselineData', baseline_data, delimiter=",", fmt="%2.5f")
 '''
-
+print("Loading normalized data")
 moving_average_array = np.loadtxt('movingAverageArray.txt', dtype=float)
-baseline_coordinate_list = np.loadtxt('baselineCoordinates')
+plt.plot(moving_average_array)
+baseline_data = np.loadtxt('baselineData', dtype=float, delimiter=",")
+baseline_coordinate_list = np.loadtxt('baselineCoordinates', dtype=float)
 baseline_coordinate_list = [[int(baseline_coordinate_list[0]), int(baseline_coordinate_list[1])]]
 
-six_state_model = hmm.GaussianHMM(n_components=6, covariance_type='full', init_params="stc", n_iter=500, tol=0.1, verbose=True)
-six_state_model.transmat_ = np.array([[0.5, 0.25 - 0.000005, 0.25 - 0.000005, 0.000005, 0.000005, 0],
-                                      [0.25-0.000005, 0.5, 0.25-0.000005, 0.000005, 0.000005, 0],
-                                      [0.25-0.000005, 0.25-0.000005, 0.5, 0.000005, 0.000005, 0],
-                                      [0.01, 0.01, 0.01, 0.95, 0.02, 0],
-                                      [0, 0, 0, 0.03, 0.94, 0.03],
-                                      [0, 0, 0, 0.02, 0.08, 0.9]])
+'''
+rawAnnotations = loadmat('./NewData/RipPeakSec')['RipPeakSec']
+np.savetxt('annotated_ripples.txt', rawAnnotations)
+'''
+annotated_ripples = np.floor(np.loadtxt('annotated_ripples.txt')*1000).astype(int)
 
-six_state_model.means_ = np.array([[0], [1.5], [-1.5], [6], [-9], [15]])
-six_state_model.startprob_ = np.array([[1 / 3], [1 / 3], [1 / 3], [0], [0], [0]])
+nine_state_model = hmm.GaussianHMM(n_components=9, covariance_type='full', init_params="stc", n_iter=500, tol=0.1, verbose=True)
+# TODO idea: fit PDF (multinomial, GMM?) to SWR data slices, use that as SWR state emission
+# TODO cont.: fit PDF to noise, after-ripple event, gamma, as well
+nine_state_model.transmat_ = np.array([[0.5, 0.25 - 0.000005, 0.25 - 0.000005, 0.000005, 0.000004, 0.000001, 0, 0, 0],
+                                       [0.25-0.000005, 0.5, 0.25-0.000005, 0.000005, 0.000004, 0.000001, 0, 0, 0],
+                                       [0.25-0.000005, 0.25-0.000005, 0.5, 0.000005, 0.000004, 0.000001, 0, 0, 0],
+                                       [0.05, 0.05, 0.05, 0.83, 0.02, 0, 0, 0, 0],
+                                       [0.05, 0.05, 0.05, 0.05, 0.77, 0.03, 0, 0, 0],
+                                       [0.01, 0.01, 0.015, 0.05, 0.02, 0.85, 0.05, 0.005, 0],
+                                       [0.01, 0.015, 0.01, 0, 0.07, 0.1, 0.8, 0, 0.005],
+                                       [0, 0, 0, 0.2, 0, 0.5, 0, 0.3, 0],
+                                       [0, 0, 0, 0, 0.2, 0, 0.5, 0, 0.3]])
+
+nine_state_model.startprob_ = np.array([[1 / 3], [1 / 3], [1 / 3], [0], [0], [0], [0], [0], [0]])
 
 moving_average_array = np.nan_to_num(moving_average_array)
 # for 1d arrays -> code assumes 2d
+lazycopy = moving_average_array.copy()
 if moving_average_array.ndim <= 1:
     moving_average_array = np.asmatrix(moving_average_array)
 
 for columnIndex in range(len(moving_average_array[0])):
-    i, j = baseline_coordinate_list[columnIndex]
-    print(moving_average_array[columnIndex, i:j])
-    baseline_deviance = np.std(moving_average_array[columnIndex, i:j])
-    baseline_mean = np.mean(moving_average_array[columnIndex, i:j])
-    print(baseline_deviance, baseline_mean)
-    '''model.means_ = [[0], [baseline_mean + baseline_deviance * 4],
-                    [baseline_mean - baseline_deviance * -6],
-                    [baseline_mean + baseline_deviance * 9],
-                    [baseline_deviance * 100]]'''
-    '''
-    training_limit = int(np.floor(moving_average_array.shape[1]/50))
-    six_state_model.fit(moving_average_array[columnIndex, 0:training_limit].reshape(-1, 1))
 
-    model_file = open('six_state_model.pkl', "wb")
-    pickle.dump(six_state_model, model_file)
+    i, j = baseline_coordinate_list[columnIndex]
+    baseline_deviance = np.std(moving_average_array[columnIndex, i:j])
+    nine_state_model.means_ = [[0], [baseline_deviance * -2], [-baseline_deviance * 2],
+                               [baseline_deviance * -20],
+                               [baseline_deviance * 20],
+                               [baseline_deviance * -40],
+                               [baseline_deviance * 40],
+                               [baseline_deviance * -60],
+                               [baseline_deviance * 60]]
     '''
-    model_file = open('six_state_model.pkl', "rb")
-    six_state_model = pickle.load(model_file)
+    print("Training new model - should you want to load one instead, comment in the according lines")
+    training_limit = int(np.floor(moving_average_array.shape[1]/10))
+    nine_state_model.fit(moving_average_array[columnIndex, 0:training_limit].reshape(-1, 1))
+    model_file = open('nine_state_model_equal_transmat.pkl', "wb")
+    pickle.dump(nine_state_model, model_file)
+    '''
+    print("Loading previously trained model - should you want to train one instead, comment in the according lines")
+    model_file = open('nine_state_model_equal_transmat.pkl', "rb")
+    nine_state_model = pickle.load(model_file)
 
     print('Training finished, predicting ...')
-    test = six_state_model.predict(moving_average_array[columnIndex].reshape(-1, 1))
+    test = nine_state_model.predict(moving_average_array[columnIndex].reshape(-1, 1))
     logger = ExtractionLogger()
     print('Prediction finished, evaluating ...')
-    ripples = extract_swr_coordinates(test, state_chain_length=100, swr_distance=100000, swr_state_hits=3, extraction_logger=logger)
+    ripples = extract_swr_coordinates(test, state_chain_length=40, swr_distance=10000,
+                                      swr_length=100, swr_state_hits=2, extraction_logger=logger)
     print('Evaluation finished, plotting ...')
-    '''plt.plot(baseline_data[columnIndex], 'g', alpha=0.7)model.means_ = [[0], [baseline_mean+baselineDeviance * 4],
-                    [baseline_mean-baselineDeviance * -6],
-                    [baseline_mean+baselineDeviance * 9],
-                    [baseline_mean * 1000]]
-    '''
-    plt.plot(moving_average_array[columnIndex, 0:5000], alpha=0.8)
-    plt.plot(test[0:5000])
-    plt.show()
-    '''for x in ripples:
-        plt.plot(range(x[0], x[1]), moving_average_array[columnIndex, x[0]:x[1]], 'r')
-    plt.savefig('result.png')'''
-    logger.print()
-    for x in ripples:
-        print(x)
+    print("num of ripps: {0}".format(len(ripples)))
+    for index, x in enumerate(ripples):
+        raw_ripp = baseline_data[x[0]-500:x[1]+500]
+        plt.plot(range(x[0]-500, x[1]+500), raw_ripp, 'r', alpha=0.7)
+        plt.plot(range(x[0]-500, x[1]+500), test[x[0]-500:x[1]+500] * 1000, 'g*', alpha=0.5)
+        plt.plot(range(x[0]-500, x[1]+500), lazycopy[x[0]-500:x[1]+500] * 1000, 'b-', alpha=0.5)
+        plt.savefig('./imagedump/{0}'.format(index))
+        plt.close()
 print(time.time() - start)
-
